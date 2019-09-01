@@ -1,3 +1,4 @@
+//! code copy from [shadowsocks-rust](https://github.com/shadowsocks/shadowsocks-rust)
 //! This is a mod for storing and parsing configuration
 //!
 //! According to shadowsocks' official documentation, the standard configuration
@@ -66,7 +67,12 @@ use serde_urlencoded;
 use trust_dns_resolver::config::{NameServerConfigGroup, ResolverConfig};
 use url::{self, Url};
 
-use crate::{crypto::cipher::CipherType, plugin::PluginConfig};
+use crate::{
+    crypto::cipher::CipherType,
+        // ToDo: plugin is diabled for now.
+
+//    plugin::PluginConfig
+};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct SSConfig {
@@ -82,10 +88,10 @@ struct SSConfig {
     password: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     method: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plugin: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plugin_opts: Option<String>,
+//    #[serde(skip_serializing_if = "Option::is_none")]
+//    plugin: Option<String>,
+//    #[serde(skip_serializing_if = "Option::is_none")]
+//    plugin_opts: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timeout: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,10 +116,10 @@ struct SSServerExtConfig {
     port: u16,
     password: String,
     method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plugin: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plugin_opts: Option<String>,
+//    #[serde(skip_serializing_if = "Option::is_none")]
+//    plugin: Option<String>,
+//    #[serde(skip_serializing_if = "Option::is_none")]
+//    plugin_opts: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     timeout: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -203,11 +209,11 @@ pub struct ServerConfig {
     /// Encryption key
     enc_key: Bytes,
     /// Plugin config
-    plugin: Option<PluginConfig>,
+//    plugin: Option<PluginConfig>,
     /// UDP timeout
     udp_timeout: Option<Duration>,
-    /// Plugin address
-    plugin_addr: Option<ServerAddr>,
+//    /// Plugin address
+//    plugin_addr: Option<ServerAddr>,
 }
 
 impl ServerConfig {
@@ -217,7 +223,7 @@ impl ServerConfig {
         pwd: String,
         method: CipherType,
         timeout: Option<Duration>,
-        plugin: Option<PluginConfig>,
+//        plugin: Option<PluginConfig>,
     ) -> ServerConfig {
         let enc_key = method.bytes_to_key(pwd.as_bytes());
         trace!("Initialize config with pwd: {:?}, key: {:?}", pwd, enc_key);
@@ -227,15 +233,16 @@ impl ServerConfig {
             method,
             timeout,
             enc_key,
-            plugin,
+//            plugin,
             udp_timeout: None,
-            plugin_addr: None,
+//            plugin_addr: None,
         }
     }
 
     /// Create a basic config
     pub fn basic(addr: SocketAddr, password: String, method: CipherType) -> ServerConfig {
-        ServerConfig::new(ServerAddr::SocketAddr(addr), password, method, None, None)
+        ServerConfig::new(ServerAddr::SocketAddr(addr), password, method, None)
+//        ServerConfig::new(ServerAddr::SocketAddr(addr), password, method, None, None)
     }
 
     /// Set encryption method
@@ -246,9 +253,9 @@ impl ServerConfig {
     }
 
     /// Set plugin
-    pub fn set_plugin(&mut self, p: PluginConfig) {
-        self.plugin = Some(p);
-    }
+//    pub fn set_plugin(&mut self, p: PluginConfig) {
+//        self.plugin = Some(p);
+//    }
 
     /// Set server addr
     pub fn set_addr(&mut self, a: ServerAddr) {
@@ -281,24 +288,24 @@ impl ServerConfig {
     }
 
     /// Get plugin
-    pub fn plugin(&self) -> Option<&PluginConfig> {
-        self.plugin.as_ref()
-    }
+//    pub fn plugin(&self) -> Option<&PluginConfig> {
+//        self.plugin.as_ref()
+//    }
 
     /// Get UDP timeout
     pub fn udp_timeout(&self) -> &Option<Duration> {
         &self.udp_timeout
     }
 
-    /// Set plugin address
-    pub fn set_plugin_addr(&mut self, a: ServerAddr) {
-        self.plugin_addr = Some(a);
-    }
-
-    /// Get plugin address
-    pub fn plugin_addr(&self) -> &Option<ServerAddr> {
-        &self.plugin_addr
-    }
+//    /// Set plugin address
+//    pub fn set_plugin_addr(&mut self, a: ServerAddr) {
+//        self.plugin_addr = Some(a);
+//    }
+//
+//    /// Get plugin address
+//    pub fn plugin_addr(&self) -> &Option<ServerAddr> {
+//        &self.plugin_addr
+//    }
 
     /// Get URL for QRCode
     /// ```plain
@@ -315,17 +322,17 @@ impl ServerConfig {
         let encoded_user_info = encode_config(&user_info, URL_SAFE_NO_PAD);
 
         let mut url = format!("ss://{}@{}", encoded_user_info, self.addr());
-        if let Some(c) = self.plugin() {
-            let mut plugin = c.plugin.clone();
-            if let Some(ref opt) = c.plugin_opt {
-                plugin += ";";
-                plugin += opt;
-            }
-
-            let plugin_param = [("plugin", &plugin)];
-            url += "/?";
-            url += &serde_urlencoded::to_string(&plugin_param).unwrap();
-        }
+//        if let Some(c) = self.plugin() {
+//            let mut plugin = c.plugin.clone();
+//            if let Some(ref opt) = c.plugin_opt {
+//                plugin += ";";
+//                plugin += opt;
+//            }
+//
+//            let plugin_param = [("plugin", &plugin)];
+//            url += "/?";
+//            url += &serde_urlencoded::to_string(&plugin_param).unwrap();
+//        }
 
         url
     }
@@ -374,36 +381,37 @@ impl ServerConfig {
             }
         };
 
-        let mut plugin = None;
-        if let Some(q) = parsed.query() {
-            let query = match serde_urlencoded::from_bytes::<Vec<(String, String)>>(q.as_bytes()) {
-                Ok(q) => q,
-                Err(err) => {
-                    error!("Failed to parse QueryString, err: {}", err);
-                    return Err(UrlParseError::InvalidQueryString);
-                }
-            };
+//        let mut plugin = None;
+//        if let Some(q) = parsed.query() {
+//            let query = match serde_urlencoded::from_bytes::<Vec<(String, String)>>(q.as_bytes()) {
+//                Ok(q) => q,
+//                Err(err) => {
+//                    error!("Failed to parse QueryString, err: {}", err);
+//                    return Err(UrlParseError::InvalidQueryString);
+//                }
+//            };
+//
+//            for (key, value) in query {
+//                if key != "plugin" {
+//                    continue;
+//                }
+//
+//                let mut vsp = value.splitn(2, ';');
+//                match vsp.next() {
+//                    None => {}
+//                    Some(p) => {
+//                        plugin = Some(PluginConfig {
+//                            plugin: p.to_owned(),
+//                            plugin_opt: vsp.next().map(ToOwned::to_owned),
+//                        })
+//                    }
+//                }
+//            }
+//        }
 
-            for (key, value) in query {
-                if key != "plugin" {
-                    continue;
-                }
+//        let svrconfig = ServerConfig::new(addr, pwd.to_owned(), method.parse().unwrap(), None, plugin);
 
-                let mut vsp = value.splitn(2, ';');
-                match vsp.next() {
-                    None => {}
-                    Some(p) => {
-                        plugin = Some(PluginConfig {
-                            plugin: p.to_owned(),
-                            plugin_opt: vsp.next().map(ToOwned::to_owned),
-                        })
-                    }
-                }
-            }
-        }
-
-        let svrconfig = ServerConfig::new(addr, pwd.to_owned(), method.parse().unwrap(), None, plugin);
-
+        let svrconfig = ServerConfig::new(addr, pwd.to_owned(), method.parse().unwrap(), None);
         Ok(svrconfig)
     }
 }
@@ -461,9 +469,9 @@ impl error::Error for UrlParseError {
         }
     }
 
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
-            UrlParseError::ParseError(ref err) => Some(err as &error::Error),
+            UrlParseError::ParseError(ref err) => Some(err as &dyn error::Error),
             UrlParseError::InvalidScheme => None,
             UrlParseError::InvalidUserInfo => None,
             UrlParseError::MissingHost => None,
@@ -674,18 +682,19 @@ impl Config {
                     }
                 };
 
-                let plugin = match config.plugin {
-                    None => None,
-                    Some(plugin) => Some(PluginConfig {
-                        plugin,
-                        plugin_opt: config.plugin_opts,
-                    }),
-                };
+//                let plugin = match config.plugin {
+//                    None => None,
+//                    Some(plugin) => Some(PluginConfig {
+//                        plugin,
+//                        plugin_opt: config.plugin_opts,
+//                    }),
+//                };
 
                 let timeout = config.timeout.map(Duration::from_secs);
                 let udp_timeout = config.udp_timeout.map(Duration::from_secs);
 
-                let mut nsvr = ServerConfig::new(addr, pwd, method, timeout, plugin);
+//                let mut nsvr = ServerConfig::new(addr, pwd, method, timeout, plugin);
+                let mut nsvr = ServerConfig::new(addr, pwd, method, timeout);
 
                 nsvr.udp_timeout = udp_timeout;
 
@@ -725,18 +734,19 @@ impl Config {
                     }
                 };
 
-                let plugin = match svr.plugin {
-                    None => None,
-                    Some(p) => Some(PluginConfig {
-                        plugin: p,
-                        plugin_opt: svr.plugin_opts,
-                    }),
-                };
+//                let plugin = match svr.plugin {
+//                    None => None,
+//                    Some(p) => Some(PluginConfig {
+//                        plugin: p,
+//                        plugin_opt: svr.plugin_opts,
+//                    }),
+//                };
 
                 let timeout = svr.timeout.map(Duration::from_secs);
                 let udp_timeout = config.udp_timeout.map(Duration::from_secs);
 
-                let mut nsvr = ServerConfig::new(addr, svr.password, method, timeout, plugin);
+                let mut nsvr = ServerConfig::new(addr, svr.password, method, timeout);
+//                let mut nsvr = ServerConfig::new(addr, svr.password, method, timeout, plugin);
 
                 nsvr.udp_timeout = udp_timeout;
 
@@ -849,6 +859,16 @@ impl Config {
             Some(ip) => ip,
         }
     }
+
+    /// Check if there are any plugin are enabled with servers
+    pub fn has_server_plugins(&self) -> bool {
+//        for server in &self.server {
+//            if let Some(_) = server.plugin() {
+//                return true;
+//            }
+//        }
+        false
+    }
 }
 
 impl fmt::Display for Config {
@@ -877,8 +897,8 @@ impl fmt::Display for Config {
             });
             jconf.method = Some(svr.method().to_string());
             jconf.password = Some(svr.password().to_string());
-            jconf.plugin = svr.plugin().map(|p| p.plugin.to_string());
-            jconf.plugin_opts = svr.plugin().and_then(|p| p.plugin_opt.clone());
+//            jconf.plugin = svr.plugin().map(|p| p.plugin.to_string());
+//            jconf.plugin_opts = svr.plugin().and_then(|p| p.plugin_opt.clone());
             jconf.timeout = svr.timeout().map(|t| t.as_secs());
             jconf.udp_timeout = svr.udp_timeout().map(|t| t.as_secs());
         } else if self.server.len() > 1 {
@@ -896,8 +916,8 @@ impl fmt::Display for Config {
                     },
                     password: svr.password().to_string(),
                     method: svr.method().to_string(),
-                    plugin: svr.plugin().map(|p| p.plugin.to_string()),
-                    plugin_opts: svr.plugin().and_then(|p| p.plugin_opt.clone()),
+//                    plugin: svr.plugin().map(|p| p.plugin.to_string()),
+//                    plugin_opts: svr.plugin().and_then(|p| p.plugin_opt.clone()),
                     timeout: svr.timeout().map(|t| t.as_secs()),
                     udp_timeout: svr.udp_timeout().map(|t| t.as_secs()),
                 });

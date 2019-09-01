@@ -1,15 +1,18 @@
+//! code copy from [shadowsocks-rust](https://github.com/shadowsocks/shadowsocks-rust)
 //! Shadowsocks Server Context
 
 use std::{
     net::SocketAddr,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
     time::Instant,
 };
+use std::ops::Deref;
 
+use futures::lock::{Mutex, MutexLockFuture};
 use lru_cache::LruCache;
 use trust_dns_resolver::AsyncResolver;
 
-use crate::{config::Config, relay::dns_resolver::create_resolver};
+use crate::{temp::config::Config, temp::dns_resolver::create_resolver};
 
 type DnsQueryCache = LruCache<u16, (SocketAddr, Instant)>;
 
@@ -20,7 +23,22 @@ pub struct Context {
     dns_query_cache: Option<Arc<Mutex<DnsQueryCache>>>,
 }
 
-pub type SharedContext = Arc<Context>;
+pub struct SharedContext(Arc<Context>);
+
+impl SharedContext {
+    pub fn new(context: Arc<Context>) -> Self {
+        SharedContext(context)
+    }
+
+    pub fn get_context(&self) -> Arc<Context> {
+        self.0.clone()
+    }
+
+    pub fn get_self(&self) -> Self {
+        SharedContext(self.get_context())
+    }
+}
+
 
 impl Context {
     pub fn new(config: Config) -> Context {
@@ -53,7 +71,7 @@ impl Context {
         &*self.dns_resolver
     }
 
-    pub fn dns_query_cache(&self) -> MutexGuard<DnsQueryCache> {
-        self.dns_query_cache.as_ref().unwrap().lock().unwrap()
+    pub(crate) fn dns_query_cache(&self) -> MutexLockFuture<DnsQueryCache> {
+        self.dns_query_cache.as_ref().unwrap().lock()
     }
 }
