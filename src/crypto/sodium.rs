@@ -10,8 +10,8 @@ use bytes::{BufMut, Bytes, BytesMut};
 use libc::c_ulonglong;
 use libsodium_ffi::{
     crypto_aead_xchacha20poly1305_ietf_decrypt, crypto_aead_xchacha20poly1305_ietf_encrypt,
-    crypto_stream_chacha20_ietf_xor_ic, crypto_stream_chacha20_xor_ic, crypto_stream_salsa20_xor_ic,
-    crypto_stream_xsalsa20_xor_ic, sodium_init,
+    crypto_stream_chacha20_ietf_xor_ic, crypto_stream_chacha20_xor_ic,
+    crypto_stream_salsa20_xor_ic, crypto_stream_xsalsa20_xor_ic, sodium_init,
 };
 
 use crate::crypto::{
@@ -36,7 +36,10 @@ impl SodiumStreamCipher {
     /// Creates an instance
     pub fn new(t: CipherType, key: &[u8], iv: &[u8]) -> SodiumStreamCipher {
         match t {
-            CipherType::ChaCha20 | CipherType::Salsa20 | CipherType::XSalsa20 | CipherType::ChaCha20Ietf => {}
+            CipherType::ChaCha20
+            | CipherType::Salsa20
+            | CipherType::XSalsa20
+            | CipherType::ChaCha20Ietf => {}
             _ => panic!("sodium cipher does not support {:?} cipher", t),
         }
 

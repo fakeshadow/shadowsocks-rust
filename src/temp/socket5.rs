@@ -10,20 +10,15 @@ use std::{
     fmt::{self, Debug, Formatter},
     io::{self, Cursor},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
-    u8,
-    vec,
+    u8, vec,
 };
 
 use bytes::{Buf, BufMut, BytesMut, IntoBuf};
 use log::error;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt}
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub use self::consts::{
-    SOCKS5_AUTH_METHOD_GSSAPI,
-    SOCKS5_AUTH_METHOD_NONE,
-    SOCKS5_AUTH_METHOD_NOT_ACCEPTABLE,
+    SOCKS5_AUTH_METHOD_GSSAPI, SOCKS5_AUTH_METHOD_NONE, SOCKS5_AUTH_METHOD_NOT_ACCEPTABLE,
     SOCKS5_AUTH_METHOD_PASSWORD,
 };
 
@@ -203,7 +198,10 @@ impl error::Error for Error {
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
-        Error::new(Reply::GeneralFailure, <io::Error as error::Error>::description(&err))
+        Error::new(
+            Reply::GeneralFailure,
+            <io::Error as error::Error>::description(&err),
+        )
     }
 }
 
@@ -224,8 +222,8 @@ pub enum Address {
 
 impl Address {
     pub async fn read_from<R>(stream: &mut R) -> Result<Address, Error>
-        where
-            R: AsyncRead + Unpin,
+    where
+        R: AsyncRead + Unpin,
     {
         let mut addr_type_buf = [0u8; 1];
         let _ = stream.read_exact(&mut addr_type_buf).await?;
@@ -238,9 +236,16 @@ impl Address {
                 let _ = stream.read_exact(&mut buf).await?;
 
                 let mut cursor = buf.into_buf();
-                let v4addr = Ipv4Addr::new(cursor.get_u8(), cursor.get_u8(), cursor.get_u8(), cursor.get_u8());
+                let v4addr = Ipv4Addr::new(
+                    cursor.get_u8(),
+                    cursor.get_u8(),
+                    cursor.get_u8(),
+                    cursor.get_u8(),
+                );
                 let port = cursor.get_u16_be();
-                Ok(Address::SocketAddress(SocketAddr::V4(SocketAddrV4::new(v4addr, port))))
+                Ok(Address::SocketAddress(SocketAddr::V4(SocketAddrV4::new(
+                    v4addr, port,
+                ))))
             }
             consts::SOCKS5_ADDR_TYPE_IPV6 => {
                 let mut buf = [0u8; 18];
@@ -279,14 +284,22 @@ impl Address {
                 let raw_addr = Buf::take(cursor, length).collect::<Vec<u8>>();
                 let addr = match String::from_utf8(raw_addr) {
                     Ok(addr) => addr,
-                    Err(..) => return Err(Error::new(Reply::GeneralFailure, "Invalid address encoding")),
+                    Err(..) => {
+                        return Err(Error::new(
+                            Reply::GeneralFailure,
+                            "Invalid address encoding",
+                        ))
+                    }
                 };
 
                 Ok(Address::DomainNameAddress(addr, port))
             }
             _ => {
                 error!("Invalid address type {}", addr_type);
-                Err(Error::new(Reply::AddressTypeNotSupported, "Not supported address type"))
+                Err(Error::new(
+                    Reply::AddressTypeNotSupported,
+                    "Not supported address type",
+                ))
             }
         }
     }
@@ -294,8 +307,8 @@ impl Address {
     /// Writes to writer
     #[inline]
     pub async fn write_to<W>(self, writer: &mut W) -> io::Result<()>
-        where
-            W: AsyncWrite + Unpin,
+    where
+        W: AsyncWrite + Unpin,
     {
         let mut buf = BytesMut::with_capacity(self.serialized_len());
         self.write_to_buf(&mut buf);
@@ -390,7 +403,9 @@ fn write_socket_address<B: BufMut>(addr: &SocketAddr, buf: &mut B) {
 fn write_address<B: BufMut>(addr: &Address, buf: &mut B) {
     match *addr {
         Address::SocketAddress(ref addr) => write_socket_address(addr, buf),
-        Address::DomainNameAddress(ref dnaddr, ref port) => write_domain_name_address(dnaddr, *port, buf),
+        Address::DomainNameAddress(ref dnaddr, ref port) => {
+            write_domain_name_address(dnaddr, *port, buf)
+        }
     }
 }
 
@@ -431,22 +446,28 @@ impl TcpRequestHeader {
 
     /// Read from a reader
     pub async fn read_from<R>(r: &mut R) -> Result<TcpRequestHeader, Error>
-        where
-            R: AsyncRead + Unpin,
+    where
+        R: AsyncRead + Unpin,
     {
         let mut buf = [0u8; 3];
         let _ = r.read_exact(&mut buf).await?;
 
         let ver = buf[0];
         if ver != consts::SOCKS5_VERSION {
-            return Err(Error::new(Reply::ConnectionRefused, "Unsupported Socks version"));
+            return Err(Error::new(
+                Reply::ConnectionRefused,
+                "Unsupported Socks version",
+            ));
         }
 
         let cmd = buf[1];
         let command = match Command::from_u8(cmd) {
             Some(c) => c,
             None => {
-                return Err(Error::new(Reply::CommandNotSupported, "Unsupported command"));
+                return Err(Error::new(
+                    Reply::CommandNotSupported,
+                    "Unsupported command",
+                ));
             }
         };
 
@@ -456,8 +477,8 @@ impl TcpRequestHeader {
 
     /// Write data into a writer
     pub async fn write_to<W>(self, w: &mut W) -> io::Result<()>
-        where
-            W: AsyncWrite + Unpin,
+    where
+        W: AsyncWrite + Unpin,
     {
         let mut buf = BytesMut::with_capacity(self.serialized_len());
         self.write_to_buf(&mut buf);
@@ -507,8 +528,8 @@ impl TcpResponseHeader {
 
     /// Read from a reader
     pub async fn read_from<R>(r: &mut R) -> Result<TcpResponseHeader, Error>
-        where
-            R: AsyncRead + Unpin,
+    where
+        R: AsyncRead + Unpin,
     {
         let mut buf = [0u8; 3];
         let _ = r.read_exact(&mut buf).await?;
@@ -517,7 +538,10 @@ impl TcpResponseHeader {
         let reply_code = buf[1];
 
         if ver != consts::SOCKS5_VERSION {
-            return Err(Error::new(Reply::ConnectionRefused, "Unsupported Socks version"));
+            return Err(Error::new(
+                Reply::ConnectionRefused,
+                "Unsupported Socks version",
+            ));
         }
 
         let address = Address::read_from(r).await?;
@@ -530,8 +554,8 @@ impl TcpResponseHeader {
 
     /// Write to a writer
     pub async fn write_to<W>(self, w: &mut W) -> io::Result<()>
-        where
-            W: AsyncWrite + Unpin,
+    where
+        W: AsyncWrite + Unpin,
     {
         let mut buf = BytesMut::with_capacity(self.serialized_len());
         self.write_to_buf(&mut buf);
@@ -540,7 +564,10 @@ impl TcpResponseHeader {
 
     /// Writes to buffer
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        let TcpResponseHeader { ref reply, ref address } = *self;
+        let TcpResponseHeader {
+            ref reply,
+            ref address,
+        } = *self;
         buf.put_slice(&[consts::SOCKS5_VERSION, reply.as_u8(), 0x00]);
         address.write_to_buf(buf);
     }
@@ -574,8 +601,8 @@ impl HandshakeRequest {
 
     /// Read from a reader
     pub async fn read_from<R>(r: &mut R) -> io::Result<HandshakeRequest>
-        where
-            R: AsyncRead + Unpin,
+    where
+        R: AsyncRead + Unpin,
     {
         let mut buf = [0u8; 2];
         let _ = r.read_exact(&mut buf).await?;
@@ -584,7 +611,10 @@ impl HandshakeRequest {
         let nmet = buf[1];
 
         if ver != consts::SOCKS5_VERSION {
-            return Err(io::Error::new(io::ErrorKind::Other, "Invalid Socks5 version"));
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Invalid Socks5 version",
+            ));
         }
 
         let mut methods = vec![0u8; nmet as usize];
@@ -595,8 +625,8 @@ impl HandshakeRequest {
 
     /// Write to a writer
     pub async fn write_to<W>(self, w: &mut W) -> io::Result<()>
-        where
-            W: AsyncWrite + Unpin,
+    where
+        W: AsyncWrite + Unpin,
     {
         let mut buf = BytesMut::with_capacity(self.serialized_len());
         self.write_to_buf(&mut buf);
@@ -638,8 +668,8 @@ impl HandshakeResponse {
 
     /// Read from a reader
     pub async fn read_from<R>(r: &mut R) -> io::Result<HandshakeResponse>
-        where
-            R: AsyncRead + Unpin,
+    where
+        R: AsyncRead + Unpin,
     {
         let mut buf = [0u8; 2];
         let _ = r.read_exact(&mut buf).await?;
@@ -648,7 +678,10 @@ impl HandshakeResponse {
         let met = buf[1];
 
         if ver != consts::SOCKS5_VERSION {
-            Err(io::Error::new(io::ErrorKind::Other, "Invalid Socks5 version"))
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Invalid Socks5 version",
+            ))
         } else {
             Ok(HandshakeResponse { chosen_method: met })
         }
@@ -656,8 +689,8 @@ impl HandshakeResponse {
 
     /// Write to a writer
     pub async fn write_to<W>(self, w: &mut W) -> io::Result<()>
-        where
-            W: AsyncWrite + Unpin,
+    where
+        W: AsyncWrite + Unpin,
     {
         let mut buf = BytesMut::with_capacity(self.serialized_len());
         self.write_to_buf(&mut buf);
@@ -702,8 +735,8 @@ impl UdpAssociateHeader {
 
     /// Read from a reader
     pub async fn read_from<R>(r: &mut R) -> Result<UdpAssociateHeader, Error>
-        where
-            R: AsyncRead + Unpin,
+    where
+        R: AsyncRead + Unpin,
     {
         let mut buf = [0u8; 3];
         let _ = r.read_exact(&mut buf).await?;
@@ -715,8 +748,8 @@ impl UdpAssociateHeader {
 
     /// Write to a writer
     pub async fn write_to<W>(self, w: &mut W) -> io::Result<()>
-        where
-            W: AsyncWrite + Unpin,
+    where
+        W: AsyncWrite + Unpin,
     {
         let mut buf = BytesMut::with_capacity(self.serialized_len());
         self.write_to_buf(&mut buf);
@@ -725,7 +758,10 @@ impl UdpAssociateHeader {
 
     /// Write to buffer
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        let UdpAssociateHeader { ref frag, ref address } = *self;
+        let UdpAssociateHeader {
+            ref frag,
+            ref address,
+        } = *self;
         buf.put_slice(&[0x00, 0x00, *frag]);
         address.write_to_buf(buf);
     }

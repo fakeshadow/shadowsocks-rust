@@ -1,41 +1,51 @@
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-    time::Duration,
-};
+use std::future::Future;
+use std::pin::Pin;
+use std::process::Output;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use futures::{channel::mpsc::unbounded, FutureExt, lock::Mutex, SinkExt, StreamExt};
+use async_std::sync::RwLock;
+use futures::{channel::mpsc::unbounded, lock::Mutex, FutureExt, SinkExt, StreamExt};
+use hashbrown::HashMap;
 use tokio::net::{
-    udp::split::UdpSocketRecvHalf,
+    udp::split::{UdpSocketRecvHalf, UdpSocketSendHalf},
     UdpSocket,
 };
-use tokio::net::udp::split::UdpSocketSendHalf;
 
 use crate::crypto::cipher::CipherType;
 use crate::temp::context::SharedContext;
 use crate::udp::{
-    session::UdpSession,
-    types::{LocalSender, MAXIMUM_UDP_PAYLOAD_SIZE, SharedUdpSocketSendHalf},
+    session::{UdpSession, UdpSessionTrait},
+    types::{LocalSender, SharedUdpSocketSendHalf, SharedUdpSockets, MAXIMUM_UDP_PAYLOAD_SIZE},
 };
 
+/// UdpServer used on both remote and local.(Acts like an actor)
 pub struct UdpServer {
     pub(crate) addr: SocketAddr,
     pub(crate) cipher: CipherType,
     pub(crate) key: Vec<u8>,
     pub(crate) shared_socket: Option<SharedUdpSocketSendHalf>,
+    // self_sockets is only used when running at local. it's always None when running a server.
+    pub(crate) self_sockets: Option<SharedUdpSockets>,
     // ToDo: remove option
     pub(crate) shared_context: Option<SharedContext>,
     pub(crate) udp_timeout: Duration,
 }
 
 impl UdpServer {
-    pub(crate) fn new(addr: SocketAddr, cipher: CipherType) -> Self {
+    pub(crate) fn new(addr: SocketAddr, cipher: CipherType, is_local: bool) -> Self {
+        let self_sockets = if is_local {
+            Some(Arc::new(Mutex::new(hashbrown::HashMap::new())))
+        } else {
+            None
+        };
+
         UdpServer {
             addr,
             cipher,
             key: vec![],
             shared_socket: None,
             //ToDo: add shared_context
+            self_sockets,
             shared_context: None,
             udp_timeout: Duration::from_secs(3),
         }
@@ -45,7 +55,10 @@ impl UdpServer {
         self.shared_socket = Some(Arc::new(Mutex::new(socket)));
     }
 
-    pub(crate) async fn run(&mut self) -> std::io::Result<()> {
+    pub(crate) async fn run<T>(&mut self) -> std::io::Result<()>
+    where
+        T: UdpSessionTrait,
+    {
         // split udp socket and use a separate thread to handle the send half
         let (socket_receiver, socket_sender) = UdpSocket::bind(self.addr).await?.split();
 
@@ -64,21 +77,20 @@ impl UdpServer {
         // iter channel_receiver stream, generate sessions and run them in spawned futures.
         while let Some((bytes, addr)) = channel_receiver.next().await {
             // convert server to session by reference and take all the server settings
-            let mut session: UdpSession = self.into();
+            let mut session: T = UdpSessionTrait::new(self);
 
             session.attach_buf(bytes).attach_source_addr(addr);
 
-            tokio::spawn(
-                session.run()
-                    .map(|e| if let Err(e) = e {
-                        println!("{:?}", e.to_string())
-                    })
-            );
-        };
+            tokio::spawn(session.run().map(|e| {
+                if let Err(e) = e {
+                    println!("{:?}", e.to_string())
+                }
+            }));
+        }
         Ok(())
     }
 
-    async fn receive_handler(
+    pub(crate) async fn receive_handler(
         mut receiver: UdpSocketRecvHalf,
         mut local_sender: LocalSender,
     ) -> std::io::Result<()> {

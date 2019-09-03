@@ -108,8 +108,12 @@ impl AeadDecryptor for MiscreantCipher {
         buf.put_slice(&input[..input.len() - tag_size]);
 
         let result = match self.cipher {
-            MiscreantCryptoVariant::Aes128(ref mut cipher) => cipher.open_in_place(&self.nonce, b"", &mut buf),
-            MiscreantCryptoVariant::Aes256(ref mut cipher) => cipher.open_in_place(&self.nonce, b"", &mut buf),
+            MiscreantCryptoVariant::Aes128(ref mut cipher) => {
+                cipher.open_in_place(&self.nonce, b"", &mut buf)
+            }
+            MiscreantCryptoVariant::Aes256(ref mut cipher) => {
+                cipher.open_in_place(&self.nonce, b"", &mut buf)
+            }
         };
 
         result

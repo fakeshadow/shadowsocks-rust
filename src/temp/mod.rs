@@ -1,4 +1,4 @@
-pub mod socket5;
+pub mod config;
 pub mod context;
 pub mod dns_resolver;
-pub mod config;
+pub mod socket5;

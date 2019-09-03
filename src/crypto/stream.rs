@@ -39,9 +39,10 @@ pub fn new_stream(t: CipherType, key: &[u8], iv: &[u8], mode: CryptoMode) -> Box
         CipherType::Plain => Box::new(dummy::DummyCipher),
 
         #[cfg(feature = "sodium")]
-        CipherType::ChaCha20 | CipherType::Salsa20 | CipherType::XSalsa20 | CipherType::ChaCha20Ietf => {
-            Box::new(sodium::SodiumStreamCipher::new(t, key, iv))
-        }
+        CipherType::ChaCha20
+        | CipherType::Salsa20
+        | CipherType::XSalsa20
+        | CipherType::ChaCha20Ietf => Box::new(sodium::SodiumStreamCipher::new(t, key, iv)),
 
         #[cfg(feature = "rc4")]
         CipherType::Rc4Md5 => Box::new(rc4_md5::Rc4Md5Cipher::new(key, iv, mode)),

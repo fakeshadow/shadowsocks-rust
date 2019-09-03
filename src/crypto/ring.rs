@@ -3,7 +3,8 @@
 use std::{mem, ptr};
 
 use ring::aead::{
-    open_in_place, seal_in_place, Aad, Nonce, OpeningKey, SealingKey, AES_128_GCM, AES_256_GCM, CHACHA20_POLY1305,
+    open_in_place, seal_in_place, Aad, Nonce, OpeningKey, SealingKey, AES_128_GCM, AES_256_GCM,
+    CHACHA20_POLY1305,
 };
 
 use crate::crypto::{
@@ -54,7 +55,12 @@ impl RingAeadCipher {
         }
     }
 
-    fn new_variant(t: CipherType, key: &[u8], nonce: &[u8], is_seal: bool) -> RingAeadCryptoVariant {
+    fn new_variant(
+        t: CipherType,
+        key: &[u8],
+        nonce: &[u8],
+        is_seal: bool,
+    ) -> RingAeadCryptoVariant {
         macro_rules! seal_or_open {
             ($item:ident, $key:ident, $crypt:ident) => {
                 RingAeadCryptoVariant::$item($key::new(&$crypt, key).unwrap(), Bytes::from(nonce))
@@ -106,7 +112,8 @@ impl AeadEncryptor for RingAeadCipher {
         if let RingAeadCryptoVariant::Seal(ref key, ref nonce) = self.cipher {
             seal_in_place(
                 key,
-                Nonce::try_assume_unique_for_key(nonce).expect("AEAD cipher nonce length not match"),
+                Nonce::try_assume_unique_for_key(nonce)
+                    .expect("AEAD cipher nonce length not match"),
                 Aad::empty(),
                 &mut buf,
                 tag_len,
@@ -133,7 +140,8 @@ impl AeadDecryptor for RingAeadCipher {
         let r = if let RingAeadCryptoVariant::Open(ref key, ref nonce) = self.cipher {
             match open_in_place(
                 key,
-                Nonce::try_assume_unique_for_key(nonce).expect("AEAD cipher nonce length not match"),
+                Nonce::try_assume_unique_for_key(nonce)
+                    .expect("AEAD cipher nonce length not match"),
                 Aad::empty(),
                 0,
                 &mut buf,

@@ -1,15 +1,18 @@
 #[macro_use]
 extern crate serde_derive;
 
-pub mod udp;
+use crate::udp::session::UdpSession;
+
 pub mod crypto;
 pub mod temp;
+pub mod udp;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let mut server = udp::server::UdpServer::new(
         "127.0.0.1:8080".parse().unwrap(),
         "chacha20-ietf-poly1305".parse().unwrap(),
+        false,
     );
-    server.run().await
+    server.run::<UdpSession>().await
 }

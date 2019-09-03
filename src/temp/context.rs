@@ -1,12 +1,7 @@
 //! code copy from [shadowsocks-rust](https://github.com/shadowsocks/shadowsocks-rust)
 //! Shadowsocks Server Context
 
-use std::{
-    net::SocketAddr,
-    sync::Arc,
-    time::Instant,
-};
-use std::ops::Deref;
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use futures::lock::{Mutex, MutexLockFuture};
 use lru_cache::LruCache;
@@ -38,7 +33,6 @@ impl SharedContext {
         SharedContext(self.get_context())
     }
 }
-
 
 impl Context {
     pub fn new(config: Config) -> Context {

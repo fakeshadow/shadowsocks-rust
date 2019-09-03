@@ -1,7 +1,10 @@
 //! Crypto methods for shadowsocks
 
 pub use self::{
-    aead::{new_aead_decryptor, new_aead_encryptor, AeadDecryptor, AeadEncryptor, BoxAeadDecryptor, BoxAeadEncryptor},
+    aead::{
+        new_aead_decryptor, new_aead_encryptor, AeadDecryptor, AeadEncryptor, BoxAeadDecryptor,
+        BoxAeadEncryptor,
+    },
     cipher::{CipherCategory, CipherResult, CipherType},
     stream::{new_stream, BoxStreamCipher, StreamCipher},
 };
