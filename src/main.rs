@@ -14,5 +14,6 @@ async fn main() -> std::io::Result<()> {
         "chacha20-ietf-poly1305".parse().unwrap(),
         false,
     );
+    // run with UdpSessionClient if testing for local.
     server.run::<UdpSession>().await
 }

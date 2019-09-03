@@ -1,11 +1,7 @@
-use std::future::Future;
-use std::pin::Pin;
-use std::process::Output;
+
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use async_std::sync::RwLock;
 use futures::{channel::mpsc::unbounded, lock::Mutex, FutureExt, SinkExt, StreamExt};
-use hashbrown::HashMap;
 use tokio::net::{
     udp::split::{UdpSocketRecvHalf, UdpSocketSendHalf},
     UdpSocket,
@@ -14,15 +10,17 @@ use tokio::net::{
 use crate::crypto::cipher::CipherType;
 use crate::temp::context::SharedContext;
 use crate::udp::{
-    session::{UdpSession, UdpSessionTrait},
+    session::{UdpSessionTrait},
     types::{LocalSender, SharedUdpSocketSendHalf, SharedUdpSockets, MAXIMUM_UDP_PAYLOAD_SIZE},
 };
+use crate::temp::socket5::Address;
 
 /// UdpServer used on both remote and local.(Acts like an actor)
 pub struct UdpServer {
     pub(crate) addr: SocketAddr,
     pub(crate) cipher: CipherType,
     pub(crate) key: Vec<u8>,
+    pub(crate) remote_server_addr: Option<Address>,
     pub(crate) shared_socket: Option<SharedUdpSocketSendHalf>,
     // self_sockets is only used when running at local. it's always None when running a server.
     pub(crate) self_sockets: Option<SharedUdpSockets>,
@@ -43,6 +41,8 @@ impl UdpServer {
             addr,
             cipher,
             key: vec![],
+            //ToDo: add remote_server_addr
+            remote_server_addr: None,
             shared_socket: None,
             //ToDo: add shared_context
             self_sockets,
@@ -55,6 +55,7 @@ impl UdpServer {
         self.shared_socket = Some(Arc::new(Mutex::new(socket)));
     }
 
+    /// `T` is either UdpSession or UdpSessionClient when running remote or local.
     pub(crate) async fn run<T>(&mut self) -> std::io::Result<()>
     where
         T: UdpSessionTrait,
@@ -71,7 +72,7 @@ impl UdpServer {
         // run recv half of UdpSocket in a separate thread and send recv bytes to unbound channel.
         std::thread::spawn(|| {
             let mut rt = tokio::runtime::current_thread::Runtime::new().unwrap();
-            rt.block_on(UdpServer::receive_handler(socket_receiver, channel_sender));
+            let _ = rt.block_on(UdpServer::receive_handler(socket_receiver, channel_sender));
         });
 
         // iter channel_receiver stream, generate sessions and run them in spawned futures.

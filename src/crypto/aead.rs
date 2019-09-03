@@ -145,7 +145,7 @@ pub fn increase_nonce(nonce: &mut [u8]) {
 pub fn increase_nonce(nonce: &mut [u8]) {
     let mut prev: u16 = 1;
     for i in nonce {
-        prev += *i as u16;
+        prev += u16::from(*i);
         *i = prev as u8;
         prev >>= 8;
     }
