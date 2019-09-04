@@ -10,10 +10,7 @@ use futures::{io::AsyncReadExt, lock::MutexLockFuture};
 use tokio::net::{udp::split::UdpSocketSendHalf, UdpSocket};
 
 use crate::crypto::CipherType;
-use crate::temp::{
-    context::SharedContext,
-    socket5::{Address},
-};
+use crate::temp::{context::SharedContext, socket5::Address};
 use crate::udp::{
     server::UdpServer,
     types::{SharedUdpSocketSendHalf, MAXIMUM_UDP_PAYLOAD_SIZE},
@@ -58,7 +55,7 @@ pub trait UdpSessionTrait: Send + Sized {
         let buf = crate::udp::crypto_io::encrypt_payload(
             self.get_cipher(),
             self.get_key(),
-            self.get_buf()
+            self.get_buf(),
         )?;
         self.attach_buf(buf);
         Ok(self)
@@ -104,6 +101,7 @@ pub trait UdpSessionTrait: Send + Sized {
     }
 }
 
+/// session is used when running as remote server
 pub struct UdpSession {
     fec: Option<(u8, u8)>,
     server_socket: SharedUdpSocketSendHalf,
@@ -117,7 +115,6 @@ pub struct UdpSession {
 }
 
 impl UdpSessionTrait for UdpSession {
-
     fn new(udp_server: &mut UdpServer) -> Self {
         UdpSession {
             fec: None,
@@ -136,7 +133,7 @@ impl UdpSessionTrait for UdpSession {
 
     /// work flow of session:
     /// try to reconstruct bytes use fec -> decrypt bytes -> extract addr and modify buf -> make proxy udp request -> encrypt and send response.
-    fn run(mut self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>> {
+    fn run(mut self) -> Pin<Box<dyn Future<Output = IoResult<()>> + Send>> {
         Box::pin(async move {
             self.reconstruct_buf()?
                 .decrypt_buf()?
@@ -208,10 +205,10 @@ impl UdpSession {
 
         // ToDo: add time out
         let sent = session_socket
-            .send_to(self.buf.as_slice(), target_socket_addr)
+            .send_to(self.get_buf(), target_socket_addr)
             .await?;
 
-        if sent != self.buf.len() {
+        if sent != self.get_buf().len() {
             return Err(
                 Error::new(ErrorKind::BrokenPipe, "Byte size doesn't match.The package most likely failed to transfer to target Address")
             );
@@ -228,24 +225,5 @@ impl UdpSession {
         self.buf = send_buf;
 
         Ok(self)
-    }
-}
-
-impl SharedContext {
-    pub(crate) async fn resolve_remote_addr(&self, addr: &Address) -> IoResult<SocketAddr> {
-        match *addr {
-            // Return directly if it is a SocketAddr
-            Address::SocketAddress(ref addr) => Ok(*addr),
-            // Resolve domain name to SocketAddr
-            Address::DomainNameAddress(ref dname, port) => {
-                let mut vec_ipaddr = self.resolve(dname, port, false).await?;
-                vec_ipaddr.pop().ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::AddrNotAvailable,
-                        "Can't get socket addr from input Address",
-                    )
-                })
-            }
-        }
     }
 }

@@ -869,10 +869,8 @@ impl Config {
     }
 
     pub fn get_remote_dns(&self) -> SocketAddr {
-        match self.remote_dns {
-            None => SocketAddr::from(SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 53)),
-            Some(ip) => ip,
-        }
+        self.remote_dns
+            .unwrap_or_else(|| SocketAddr::from(SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 53)))
     }
 
     /// Check if there are any plugin are enabled with servers

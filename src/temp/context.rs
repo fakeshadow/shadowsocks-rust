@@ -1,13 +1,18 @@
 //! code copy from [shadowsocks-rust](https://github.com/shadowsocks/shadowsocks-rust)
 //! Shadowsocks Server Context
 
-use std::{net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    io::{Error, ErrorKind, Result as IoResult},
+    net::SocketAddr,
+    sync::Arc,
+    time::Instant,
+};
 
 use futures::lock::{Mutex, MutexLockFuture};
 use lru_cache::LruCache;
 use trust_dns_resolver::AsyncResolver;
 
-use crate::{temp::config::Config, temp::dns_resolver::create_resolver};
+use crate::temp::{config::Config, dns_resolver::create_resolver, socket5::Address};
 
 type DnsQueryCache = LruCache<u16, (SocketAddr, Instant)>;
 
@@ -21,16 +26,33 @@ pub struct Context {
 pub struct SharedContext(Arc<Context>);
 
 impl SharedContext {
-    pub fn new(context: Arc<Context>) -> Self {
+    pub(crate) fn new(context: Arc<Context>) -> Self {
         SharedContext(context)
     }
 
-    pub fn get_context(&self) -> Arc<Context> {
+    pub(crate) fn get_context(&self) -> Arc<Context> {
         self.0.clone()
     }
 
-    pub fn get_self(&self) -> Self {
+    pub(crate) fn get_self(&self) -> Self {
         SharedContext(self.get_context())
+    }
+
+    pub(crate) async fn resolve_remote_addr(&self, addr: &Address) -> IoResult<SocketAddr> {
+        match *addr {
+            // Return directly if it is a SocketAddr
+            Address::SocketAddress(ref addr) => Ok(*addr),
+            // Resolve domain name to SocketAddr
+            Address::DomainNameAddress(ref dname, port) => {
+                let mut vec_ipaddr = self.resolve(dname, port, false).await?;
+                vec_ipaddr.pop().ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::AddrNotAvailable,
+                        "Can't get socket addr from input Address",
+                    )
+                })
+            }
+        }
     }
 }
 

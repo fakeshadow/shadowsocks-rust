@@ -7,14 +7,11 @@ use std::{
     time::Duration,
 };
 
-use futures::{FutureExt, io::AsyncReadExt, StreamExt};
-use futures::lock::MutexLockFuture;
-use tokio::net::{
-    udp::split::UdpSocketSendHalf,
-    UdpSocket,
-};
+use futures::{io::AsyncReadExt, lock::MutexLockFuture, FutureExt, Sink, StreamExt};
+use tokio::net::{udp::split::UdpSocketSendHalf, UdpSocket};
 
 use crate::{
+    crypto::CipherType,
     temp::{
         context::SharedContext,
         socket5::{Address, UdpAssociateHeader},
@@ -22,22 +19,19 @@ use crate::{
     udp::{
         server::UdpServer,
         session::UdpSessionTrait,
-        types::{
-            LocalReceiver, SharedUdpSockets, SharedUdpSocketSendHalf,
-        },
+        types::{LocalReceiver, SharedUdpSocketSendHalf, SharedUdpSockets},
     },
 };
-use crate::crypto::CipherType;
 
+/// session client is used when running as local server
 pub struct UdpSessionClient {
     fec: Option<(u8, u8)>,
-    remote_server_addr: Address,
     server_socket: SharedUdpSocketSendHalf,
-    /// `server_sockets` is a hash map of existing udp socket connections. don't confuse them with `server_socket`
-    server_sockets: SharedUdpSockets,
+    remote_server_addr: Address,
+    /// `remote_server_sockets` is a hash map of existing udp socket connections. don't confuse them with `server_socket`
+    remote_server_sockets: SharedUdpSockets,
     shared_context: SharedContext,
     source_socket_addr: Option<SocketAddr>,
-    target_addr: Option<Address>,
     buf: Vec<u8>,
     cipher: CipherType,
     key: Vec<u8>,
@@ -50,13 +44,12 @@ impl UdpSessionTrait for UdpSessionClient {
             fec: None,
             remote_server_addr: udp_server.remote_server_addr.as_ref().cloned().expect("Session client inherent remote_server_addr from UdpServer and it can't be None"),
             server_socket: udp_server.shared_socket.as_ref().cloned().expect("Server socket can't be none"),
-            server_sockets: udp_server.self_sockets.as_ref().cloned().expect("Session client inherent self_sockets from UdpServer and it can't be None"),
+            remote_server_sockets: udp_server.remote_server_sockets.as_ref().cloned().expect("Session client inherent self_sockets from UdpServer and it can't be None"),
             shared_context: udp_server.shared_context.as_ref()
                 .expect("For now server context is use Option<SharedContext>=None as mock data.So unwrap error is expected. TL/DR: This thing doesn't work")
                 .get_self(),
             buf: vec![],
             source_socket_addr: None,
-            target_addr: None,
             cipher: udp_server.cipher,
             key: udp_server.key.to_owned(),
             timeout: udp_server.udp_timeout,
@@ -65,7 +58,7 @@ impl UdpSessionTrait for UdpSessionClient {
 
     /// work flow of session client:
     /// extract target addr(server addr) -> encrypt buf -> use fec to add redundant data -> make proxy request -> reconstruct use fec -> decrypt response buf -> replace the buf udp header -> send response.
-    fn run(mut self) -> Pin<Box<dyn Future<Output=std::io::Result<()>> + Send>> {
+    fn run(mut self) -> Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>> {
         Box::pin(async move {
             self.extract_target_addr_from_udp_header()
                 .await?
@@ -75,7 +68,7 @@ impl UdpSessionTrait for UdpSessionClient {
                 .decrypt_buf()?
                 // this is actually not extract_target_addr as the extracted addr is never used.
                 // the purpose is to remove the addr and replace it with a new udp header.
-                .extract_target_addr_second_time()
+                .extract_target_addr_maybe_modify(true)
                 .await?
                 .send_response()
                 .await
@@ -92,9 +85,7 @@ impl UdpSessionTrait for UdpSessionClient {
         self
     }
 
-    fn attach_target_addr(&mut self, addr: Address) {
-        self.target_addr = Some(addr);
-    }
+    fn attach_target_addr(&mut self, _addr: Address) {}
 
     fn get_server_socket_lock(&self) -> MutexLockFuture<UdpSocketSendHalf> {
         self.server_socket.lock()
@@ -142,21 +133,27 @@ impl UdpSessionClient {
         addr.write_to_buf(&mut buf);
         cur.read_to_end(&mut buf).await?;
 
-        self.target_addr = Some(addr);
         self.buf = buf;
 
         Ok(self)
     }
 
-    /// we generate a udp header using `self.source_socket_addr` and write it to the buf with closure.
-    async fn extract_target_addr_second_time(&mut self) -> IoResult<&mut Self> {
-        let socket_addr = *self.get_source_socket_addr();
-
-        self.extract_target_addr_and_modify_buf(move |buf| {
-            UdpAssociateHeader::new(0, Address::SocketAddress(socket_addr)).write_to_buf(buf);
-            Ok(())
-        })
+    ///  When pass `if_modify_buf` as true we generate a udp header using `self.source_socket_addr` and write it to the buf with closure.
+    ///  Other wise we pass an empty `Ok(())` to the closure.
+    async fn extract_target_addr_maybe_modify(
+        &mut self,
+        if_modify_buf: bool,
+    ) -> IoResult<&mut Self> {
+        if if_modify_buf {
+            let socket_addr = *self.get_source_socket_addr();
+            self.extract_target_addr_and_modify_buf(move |buf| {
+                UdpAssociateHeader::new(0, Address::SocketAddress(socket_addr)).write_to_buf(buf);
+                Ok(())
+            })
             .await
+        } else {
+            self.extract_target_addr_and_modify_buf(|_| Ok(())).await
+        }
     }
 
     /// similar to how UdpServer start new udp socket. We spawn a new UdpSocket with every new addr a session client tries to connect.
@@ -179,17 +176,21 @@ impl UdpSessionClient {
 
     async fn proxy_request(&mut self) -> IoResult<&mut Self> {
         // we don't use self.target_addr when making request in session client as we want to send request to our remote udp server.
-        let target_socket_addr = self.shared_context.resolve_remote_addr(&self.remote_server_addr).await?;
+        let target_socket_addr = self
+            .shared_context
+            .resolve_remote_addr(&self.remote_server_addr)
+            .await?;
 
         // we isolate this part of code in {} as we lock self.server_sockets and it has to go out of scope before we can return &mut self.
         {
-            let mut map = self.server_sockets.lock().await;
+            let mut map = self.remote_server_sockets.lock().await;
 
             /*
                 check the hash map if the target_socket_addr already have a established UdpSocket.
                 If there is none then we spawn new socket with associate channel.
                 return the UdpSocket send half and the channel receiver as tuple.
             */
+
             let (socket_sender, channel_receiver) = match map.get_mut(&target_socket_addr) {
                 Some(r) => r,
                 None => {
@@ -217,5 +218,33 @@ impl UdpSessionClient {
         }
 
         Ok(self)
+    }
+}
+
+impl UdpSessionClient {
+    /// run session client as a local dns proxy.
+    /// flow: parser local dns buffer -> attach remote dns server addr -> encrypt buf -> make proxy request to remote udp server -> decrypt response
+    // ToDo: add dns cache.
+    pub(crate) async fn run_dns(mut self) -> IoResult<()> {
+        self.modify_dns_buf()
+            .encrypt_buf()?
+            .proxy_request()
+            .await?
+            .decrypt_buf()?
+            // we just remove the address from buffer here.and no modify is done to buffer.
+            .extract_target_addr_maybe_modify(false)
+            .await?
+            .send_response()
+            .await
+    }
+
+    /// we add remote dns server addr to incoming dns request buffer.
+    fn modify_dns_buf(&mut self) -> &mut Self {
+        let mut buf = Vec::new();
+        let addr = self.shared_context.get_context().config().get_remote_dns();
+        Address::SocketAddress(addr).write_to_buf(&mut buf);
+        buf.extend_from_slice(self.get_buf());
+
+        self.attach_buf(buf)
     }
 }

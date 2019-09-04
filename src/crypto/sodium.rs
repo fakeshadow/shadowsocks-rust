@@ -83,7 +83,7 @@ impl SodiumStreamCipher {
     }
 }
 
-fn crypto_stream_xor_ic<B: dyn BufMut>(
+fn crypto_stream_xor_ic<B: BufMut>(
     t: CipherType,
     ic: usize,
     iv: &[u8],

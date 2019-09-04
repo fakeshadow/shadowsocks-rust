@@ -1,19 +1,22 @@
+use std::{io::Result as IoResult, net::SocketAddr, sync::Arc, time::Duration};
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-
-use futures::{channel::mpsc::unbounded, lock::Mutex, FutureExt, SinkExt, StreamExt};
-use tokio::net::{
-    udp::split::{UdpSocketRecvHalf, UdpSocketSendHalf},
-    UdpSocket,
+use futures::{channel::mpsc::unbounded, lock::Mutex, FutureExt, SinkExt, StreamExt, TryFutureExt};
+use tokio::{
+    net::{
+        udp::split::{UdpSocketRecvHalf, UdpSocketSendHalf},
+        UdpSocket,
+    },
+    runtime::current_thread::Runtime,
 };
 
-use crate::crypto::cipher::CipherType;
-use crate::temp::context::SharedContext;
-use crate::udp::{
-    session::{UdpSessionTrait},
-    types::{LocalSender, SharedUdpSocketSendHalf, SharedUdpSockets, MAXIMUM_UDP_PAYLOAD_SIZE},
+use crate::{
+    crypto::cipher::CipherType,
+    temp::{context::SharedContext, socket5::Address},
+    udp::{
+        session::UdpSessionTrait,
+        types::{LocalSender, SharedUdpSocketSendHalf, SharedUdpSockets, MAXIMUM_UDP_PAYLOAD_SIZE},
+    },
 };
-use crate::temp::socket5::Address;
 
 /// UdpServer used on both remote and local.(Acts like an actor)
 pub struct UdpServer {
@@ -22,8 +25,8 @@ pub struct UdpServer {
     pub(crate) key: Vec<u8>,
     pub(crate) remote_server_addr: Option<Address>,
     pub(crate) shared_socket: Option<SharedUdpSocketSendHalf>,
-    // self_sockets is only used when running at local. it's always None when running a server.
-    pub(crate) self_sockets: Option<SharedUdpSockets>,
+    // remote_server_sockets is only used when running at local. it's always None when running on remote.
+    pub(crate) remote_server_sockets: Option<SharedUdpSockets>,
     // ToDo: remove option
     pub(crate) shared_context: Option<SharedContext>,
     pub(crate) udp_timeout: Duration,
@@ -31,7 +34,7 @@ pub struct UdpServer {
 
 impl UdpServer {
     pub(crate) fn new(addr: SocketAddr, cipher: CipherType, is_local: bool) -> Self {
-        let self_sockets = if is_local {
+        let remote_server_sockets = if is_local {
             Some(Arc::new(Mutex::new(hashbrown::HashMap::new())))
         } else {
             None
@@ -45,7 +48,7 @@ impl UdpServer {
             remote_server_addr: None,
             shared_socket: None,
             //ToDo: add shared_context
-            self_sockets,
+            remote_server_sockets,
             shared_context: None,
             udp_timeout: Duration::from_secs(3),
         }
@@ -56,7 +59,7 @@ impl UdpServer {
     }
 
     /// `T` is either UdpSession or UdpSessionClient when running remote or local.
-    pub(crate) async fn run<T>(&mut self) -> std::io::Result<()>
+    pub(crate) async fn run<T>(&mut self) -> IoResult<()>
     where
         T: UdpSessionTrait,
     {
@@ -71,8 +74,11 @@ impl UdpServer {
 
         // run recv half of UdpSocket in a separate thread and send recv bytes to unbound channel.
         std::thread::spawn(|| {
-            let mut rt = tokio::runtime::current_thread::Runtime::new().unwrap();
-            let _ = rt.block_on(UdpServer::receive_handler(socket_receiver, channel_sender));
+            let mut rt = Runtime::new().unwrap();
+            let _ = rt.block_on(
+                UdpServer::receive_handler(socket_receiver, channel_sender)
+                    .map_err(|e| println!("{:?}", e)),
+            );
         });
 
         // iter channel_receiver stream, generate sessions and run them in spawned futures.
@@ -94,7 +100,7 @@ impl UdpServer {
     pub(crate) async fn receive_handler(
         mut receiver: UdpSocketRecvHalf,
         mut local_sender: LocalSender,
-    ) -> std::io::Result<()> {
+    ) -> IoResult<()> {
         let mut buf = [0u8; MAXIMUM_UDP_PAYLOAD_SIZE];
         loop {
             let (size, addr) = receiver.recv_from(&mut buf).await?;
