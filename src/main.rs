@@ -6,6 +6,8 @@ use crate::udp::session::UdpSession;
 pub mod crypto;
 pub mod temp;
 pub mod udp;
+pub mod tcp;
+pub mod util;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {

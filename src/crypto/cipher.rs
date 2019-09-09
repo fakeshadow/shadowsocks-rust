@@ -566,7 +566,7 @@ impl CipherType {
     }
 
     /// Generate a random initialize vector for this cipher
-    pub fn gen_init_vec(self) -> Bytes {
+    fn gen_init_vec(self) -> Bytes {
         let iv_len = self.iv_size();
         CipherType::gen_random_bytes(iv_len)
     }
@@ -608,13 +608,28 @@ impl CipherType {
 
     /// Get nonce size for AEAD ciphers
     pub fn salt_size(self) -> usize {
-        assert!(self.category() == CipherCategory::Aead);
         self.key_size()
     }
 
     /// Get salt for AEAD ciphers
-    pub fn gen_salt(self) -> Bytes {
+    fn gen_salt(self) -> Bytes {
         CipherType::gen_random_bytes(self.salt_size())
+    }
+
+    /// Get iv or salt from ciphers
+    pub fn gen_iv_or_salt(&self) -> Bytes {
+        match self.category() {
+            CipherCategory::Stream => self.gen_init_vec(),
+            CipherCategory::Aead => self.gen_salt()
+        }
+    }
+
+    ///Get iv or salt buf size
+    pub fn iv_or_salt_size(&self) -> usize {
+        match self.category() {
+            CipherCategory::Stream => self.iv_size(),
+            CipherCategory::Aead => self.salt_size()
+        }
     }
 }
 

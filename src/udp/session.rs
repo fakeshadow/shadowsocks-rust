@@ -6,31 +6,32 @@ use std::{
     time::Duration,
 };
 
-use futures::{io::AsyncReadExt, lock::MutexLockFuture};
+use futures::{FutureExt, io::AsyncReadExt, lock::MutexLockFuture, StreamExt};
 use tokio::net::{udp::split::UdpSocketSendHalf, UdpSocket};
 
-use crate::crypto::CipherType;
-use crate::temp::{context::SharedContext, socket5::Address};
-use crate::udp::{
-    server::UdpServer,
-    types::{SharedUdpSocketSendHalf, MAXIMUM_UDP_PAYLOAD_SIZE},
+use crate::{
+    crypto::CipherType,
+    temp::{context::SharedContext, socket5::Address},
+    udp::server::UdpServer,
+    util::types::{LocalReceiver, LocalSender, MAXIMUM_UDP_PAYLOAD_SIZE, SharedUdpSockets, SharedUdpSocketSendHalf, SharedUdpSocketsInner},
 };
+use crate::udp::session_client::UdpSessionClient;
 
-/// the common session trait used by both remote and local server.
-/// trait need to be send so it can be passed to different threads as we run sessions in spawned futures so they may jump between threads.
+/// the common session trait used by both remote and local udp server.
+/// trait need to be Send so it can be passed to different threads as we run sessions in spawned futures so they may jump between threads.
 pub trait UdpSessionTrait: Send + Sized {
-    /// sessions inherent most of it's fields from UdpServer.
-    fn new(udp_server: &mut UdpServer) -> Self;
+    /// sessions inherent most of it's fields from UdpServer and take in the incoming buffer along with socket addr
+    fn new(udp_server: &mut UdpServer, buf: Vec<u8>, source_socket_addr: SocketAddr) -> Self;
 
-    fn run(mut self) -> Pin<Box<dyn Future<Output = IoResult<()>> + Send>> {
+    fn run(self) -> Pin<Box<dyn Future<Output=IoResult<()>> + Send>> {
         Box::pin(async move { Ok(()) })
     }
 
     fn attach_buf(&mut self, bytes: Vec<u8>) -> &mut Self;
-    fn attach_source_addr(&mut self, addr: SocketAddr) -> &mut Self;
     fn attach_target_addr(&mut self, addr: Address);
 
     fn get_server_socket_lock(&self) -> MutexLockFuture<UdpSocketSendHalf>;
+    fn get_remote_sockets_lock(&self) -> MutexLockFuture<SharedUdpSocketsInner>;
     fn get_cipher(&self) -> CipherType;
     fn get_key(&self) -> &[u8];
     fn get_buf(&self) -> &[u8];
@@ -61,13 +62,83 @@ pub trait UdpSessionTrait: Send + Sized {
         Ok(self)
     }
 
+    /// similar to how UdpServer start new udp socket. We spawn a new UdpSocket with the provided `target_socket_addr`.
+    /// The difference is we spawn a future instead of a thread to handle the UdpSocket recv half and channel sender.
+    // ToDo: add removal of unused socket after certain period of time unused.
+    fn spawn_new_socket<'a>(
+        target_socket_addr: &'a SocketAddr,
+    ) -> Pin<Box<dyn Future<Output=IoResult<(UdpSocketSendHalf, LocalReceiver)>> + Send + 'a>> {
+        Box::pin(
+            async move {
+                let (channel_sender, channel_receiver) =
+                    futures::channel::mpsc::unbounded::<(Vec<u8>, SocketAddr)>();
+
+                let (socket_receiver, socket_sender) = UdpSocket::bind(target_socket_addr).await?.split();
+
+                crate::util::helper::spawn_handler(UdpServer::receive_handler(socket_receiver, channel_sender));
+
+                Ok((socket_sender, channel_receiver))
+            }
+        )
+    }
+
+    /// handle the proxy request from sending to receiving. use a hash map to maintain UdpSocket connections
+    fn proxy_request_trait<'a>(
+        &'a mut self,
+        target_socket_addr: SocketAddr,
+    ) -> Pin<Box<dyn Future<Output=IoResult<&'a mut Self>> + Send + 'a>> {
+        Box::pin(
+            async move {
+                // we isolate this part of code in {} as we lock self.remote_sockets and it has to go out of scope before we can return &mut self.
+                let (buf, _) = {
+                    let mut map = self.get_remote_sockets_lock().await;
+
+                    /*
+                        check the hash map if the target_socket_addr already have a established UdpSocket.
+                        If there is none then we spawn new socket with associate channel.
+                        return the UdpSocket send half and the channel receiver as tuple.
+                    */
+
+                    let (socket_sender, channel_receiver) = match map.get_mut(&target_socket_addr) {
+                        Some(r) => r,
+                        None => {
+                            let (a, b) = Self::spawn_new_socket(&target_socket_addr).await?;
+                            map.insert(target_socket_addr.clone(), (a, b));
+                            map.get_mut(&target_socket_addr).unwrap()
+                        }
+                    };
+
+                    // send the request and listen to the channel_receiver for the response.
+                    // ToDo: add time out
+                    let buf = self.get_buf();
+                    let sent = socket_sender
+                        .send_to(buf, &target_socket_addr)
+                        .await?;
+
+                    if sent != buf.len() {
+                        return Err(
+                            Error::new(ErrorKind::BrokenPipe, "Byte size doesn't match.The package most likely failed to transfer to target Address")
+                        );
+                    }
+
+                    // ToDo: remove unwrap
+                    // return received buf and socket_addr(is not used)
+                    channel_receiver.next().await.ok_or(Error::new(ErrorKind::BrokenPipe, "Receive data success but the data is corrupted"))?
+                };
+
+                // we return a &mut self with the new buf.
+                Ok(self.attach_buf(buf))
+            }
+        )
+    }
+
     /// except from extract target_addr we also try to modify `self.buf` in different cases when running on remote and local.
     fn extract_target_addr_and_modify_buf<'a, F>(
         &'a mut self,
         mut modify_buf: F,
-    ) -> Pin<Box<dyn Future<Output = IoResult<&'a mut Self>> + Send + 'a>>
-    where
-        F: 'a + FnMut(&mut Vec<u8>) -> IoResult<()> + Send,
+    ) -> Pin<Box<dyn Future<Output=IoResult<&'a mut Self>> + Send + 'a>>
+        where
+            F: FnMut(&mut Vec<u8>) -> IoResult<()> + Send + 'a,
     {
         Box::pin(async move {
             // extract target address from self.buf
@@ -89,7 +160,7 @@ pub trait UdpSessionTrait: Send + Sized {
         })
     }
 
-    fn send_response<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = IoResult<()>> + Send + 'a>> {
+    fn send_response<'a>(&'a mut self) -> Pin<Box<dyn Future<Output=IoResult<()>> + Send + 'a>> {
         Box::pin(async move {
             let mut sender = self.get_server_socket_lock().await;
 
@@ -101,12 +172,86 @@ pub trait UdpSessionTrait: Send + Sized {
     }
 }
 
+pub trait SessionTrait: Sized + Send {
+    /// sessions inherent most of it's fields from UdpServer and take in the incoming buffer along with socket addr
+    fn new(udp_server: &mut UdpServer, buf: Vec<u8>, source_socket_addr: SocketAddr) -> Self;
+
+    fn run(self) -> Pin<Box<dyn Future<Output=IoResult<()>> + Send>> {
+        Box::pin(async move { Ok(()) })
+    }
+
+    fn attach_buf(&mut self, bytes: Vec<u8>) -> &mut Self;
+    fn attach_target_addr(&mut self, addr: Address);
+
+    fn get_cipher(&self) -> CipherType;
+    fn get_key(&self) -> &[u8];
+    fn get_buf(&self) -> &[u8];
+
+    /// try to reconstruct the buffer use reed-solomon.
+    /// it will also be used to construct the redundant buffer in session client case
+    //ToDo: dynamic split size.
+    fn reconstruct_buf(&mut self) -> IoResult<&mut Self>;
+
+    fn decrypt_buf(&mut self) -> IoResult<&mut Self> {
+        let buf = crate::udp::crypto_io::decrypt_payload(
+            self.get_cipher(),
+            self.get_key(),
+            self.get_buf(),
+        )?;
+        self.attach_buf(buf);
+        Ok(self)
+    }
+
+    fn encrypt_buf(&mut self) -> IoResult<&mut Self> {
+        let buf = crate::udp::crypto_io::encrypt_payload(
+            self.get_cipher(),
+            self.get_key(),
+            self.get_buf(),
+        )?;
+        self.attach_buf(buf);
+        Ok(self)
+    }
+
+    /// except from extract target_addr we also try to modify `self.buf` in different cases when running on remote and local.
+    fn extract_target_addr_and_modify_buf<'a, F>(
+        &'a mut self,
+        mut modify_buf: F,
+    ) -> Pin<Box<dyn Future<Output=IoResult<&'a mut Self>> + Send + 'a>>
+        where
+            F: FnMut(&mut Vec<u8>) -> IoResult<()> + Send + 'a,
+    {
+        Box::pin(async move {
+            // extract target address from self.buf
+            let mut cur = Cursor::new(self.get_buf());
+            let addr = Address::read_from(&mut cur).await?;
+
+            let mut buf = Vec::new();
+
+            // we can use this closure to modify buf.
+            modify_buf(&mut buf)?;
+
+            // we push all the remaining bytes to buf
+            cur.read_to_end(&mut buf).await?;
+
+            // attach_buf return &mut self so it's safe to chain them together.
+            self.attach_buf(buf).attach_target_addr(addr);
+
+            Ok(self)
+        })
+    }
+}
+
+
 /// session is used when running as remote server
 pub struct UdpSession {
     fec: Option<(u8, u8)>,
+    /// the guarded UdpSocket send half. we use it to send the final response back to source_addr
     server_socket: SharedUdpSocketSendHalf,
+    /// `remote_sockets` is a hash map of existing udp socket connections to `target_addr`(shared between threads to reduce duplicate udp connections).
+    remote_sockets: SharedUdpSockets,
+    /// shared_context used to resolve addr to Address that can be used to establish UdpSocket.
     shared_context: SharedContext,
-    source_socket_addr: Option<SocketAddr>,
+    source_socket_addr: SocketAddr,
     target_addr: Option<Address>,
     buf: Vec<u8>,
     cipher: CipherType,
@@ -114,16 +259,21 @@ pub struct UdpSession {
     timeout: Duration,
 }
 
+
+
+
+
 impl UdpSessionTrait for UdpSession {
-    fn new(udp_server: &mut UdpServer) -> Self {
+    fn new(udp_server: &mut UdpServer, buf: Vec<u8>, source_socket_addr: SocketAddr) -> Self {
         UdpSession {
             fec: None,
-            server_socket: udp_server.shared_socket.as_ref().unwrap().clone(),
+            server_socket: udp_server.server_socket.as_ref().cloned().expect("Session inherent shared_socket from UdpServer and it can't be None"),
+            remote_sockets: udp_server.remote_sockets.as_ref().cloned().expect("Session inherent remote_sockets from UdpServer and it can't be None"),
             shared_context: udp_server.shared_context.as_ref()
                 .expect("For now server context is use Option<SharedContext>=None as mock data.So unwrap error is expected. TL/DR: This thing doesn't work")
                 .get_self(),
-            buf: vec![],
-            source_socket_addr: None,
+            buf,
+            source_socket_addr,
             target_addr: None,
             cipher: udp_server.cipher,
             key: udp_server.key.to_owned(),
@@ -133,7 +283,7 @@ impl UdpSessionTrait for UdpSession {
 
     /// work flow of session:
     /// try to reconstruct bytes use fec -> decrypt bytes -> extract addr and modify buf -> make proxy udp request -> encrypt and send response.
-    fn run(mut self) -> Pin<Box<dyn Future<Output = IoResult<()>> + Send>> {
+    fn run(mut self) -> Pin<Box<dyn Future<Output=IoResult<()>> + Send>> {
         Box::pin(async move {
             self.reconstruct_buf()?
                 .decrypt_buf()?
@@ -153,17 +303,16 @@ impl UdpSessionTrait for UdpSession {
         self
     }
 
-    fn attach_source_addr(&mut self, addr: SocketAddr) -> &mut Self {
-        self.source_socket_addr = Some(addr);
-        self
-    }
-
     fn attach_target_addr(&mut self, addr: Address) {
         self.target_addr = Some(addr);
     }
 
     fn get_server_socket_lock(&self) -> MutexLockFuture<UdpSocketSendHalf> {
         self.server_socket.lock()
+    }
+
+    fn get_remote_sockets_lock(&self) -> MutexLockFuture<SharedUdpSocketsInner> {
+        self.remote_sockets.lock()
     }
 
     fn get_cipher(&self) -> CipherType {
@@ -179,7 +328,7 @@ impl UdpSessionTrait for UdpSession {
     }
 
     fn get_source_socket_addr(&self) -> &SocketAddr {
-        self.source_socket_addr.as_ref().unwrap()
+        &self.source_socket_addr
     }
 
     /// try to reconstruct the buffer use reed-solomon.
@@ -192,38 +341,22 @@ impl UdpSessionTrait for UdpSession {
 
 impl UdpSession {
     async fn proxy_request(&mut self) -> IoResult<&mut Self> {
-        // shared context use trust dns to generate socket addr from target_addr(urls .etc)
         let target_addr = self.target_addr.as_ref().unwrap();
+
+        // write target_addr to the final buffer.
+        let mut buf_final = Vec::new();
+        target_addr.write_to_buf(&mut buf_final);
+
+        // shared context use trust dns to generate socket addr from target_addr(urls .etc)
         let target_socket_addr = self.shared_context.resolve_remote_addr(target_addr).await?;
 
-        // use a temporary udp socket to communicate with target socket.
-        let mut session_socket = UdpSocket::bind(SocketAddr::new(
-            std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)),
-            0,
-        ))
-        .await?;
+        // make proxy request with temporary UdpSockets.
+        self.proxy_request_trait(target_socket_addr).await?;
 
-        // ToDo: add time out
-        let sent = session_socket
-            .send_to(self.get_buf(), target_socket_addr)
-            .await?;
+        // write self.buf to the final buffer
+        buf_final.extend_from_slice(self.get_buf());
 
-        if sent != self.get_buf().len() {
-            return Err(
-                Error::new(ErrorKind::BrokenPipe, "Byte size doesn't match.The package most likely failed to transfer to target Address")
-            );
-        }
-
-        let mut buf = [0u8; MAXIMUM_UDP_PAYLOAD_SIZE];
-        let (size, _) = session_socket.recv_from(&mut buf).await?;
-
-        // combine target_add and the response buffer to self.buf.
-        let mut send_buf = Vec::new();
-        target_addr.write_to_buf(&mut send_buf);
-        send_buf.extend_from_slice(&buf[..size]);
-
-        self.buf = send_buf;
-
-        Ok(self)
+        // return &mut self with final buffer
+        Ok(self.attach_buf(buf_final))
     }
 }

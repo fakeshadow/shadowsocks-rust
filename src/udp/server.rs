@@ -1,6 +1,6 @@
 use std::{io::Result as IoResult, net::SocketAddr, sync::Arc, time::Duration};
 
-use futures::{channel::mpsc::unbounded, lock::Mutex, FutureExt, SinkExt, StreamExt, TryFutureExt};
+use futures::{channel::mpsc::unbounded, FutureExt, lock::Mutex, SinkExt, StreamExt, TryFutureExt};
 use tokio::{
     net::{
         udp::split::{UdpSocketRecvHalf, UdpSocketSendHalf},
@@ -14,8 +14,8 @@ use crate::{
     temp::{context::SharedContext, socket5::Address},
     udp::{
         session::UdpSessionTrait,
-        types::{LocalSender, SharedUdpSocketSendHalf, SharedUdpSockets, MAXIMUM_UDP_PAYLOAD_SIZE},
     },
+    util::types::{LocalSender, MAXIMUM_UDP_PAYLOAD_SIZE, SharedUdpSockets, SharedUdpSocketSendHalf}
 };
 
 /// UdpServer used on both remote and local.(Acts like an actor)
@@ -24,9 +24,9 @@ pub struct UdpServer {
     pub(crate) cipher: CipherType,
     pub(crate) key: Vec<u8>,
     pub(crate) remote_server_addr: Option<Address>,
-    pub(crate) shared_socket: Option<SharedUdpSocketSendHalf>,
-    // remote_server_sockets is only used when running at local. it's always None when running on remote.
-    pub(crate) remote_server_sockets: Option<SharedUdpSockets>,
+    pub(crate) server_socket: Option<SharedUdpSocketSendHalf>,
+    /// the usage of `remote_sockets` can be found in `UdpSession` and `UdpSessionClient`
+    pub(crate) remote_sockets: Option<SharedUdpSockets>,
     // ToDo: remove option
     pub(crate) shared_context: Option<SharedContext>,
     pub(crate) udp_timeout: Duration,
@@ -46,22 +46,20 @@ impl UdpServer {
             key: vec![],
             //ToDo: add remote_server_addr
             remote_server_addr: None,
-            shared_socket: None,
+            server_socket: None,
             //ToDo: add shared_context
-            remote_server_sockets,
+            remote_sockets: remote_server_sockets,
             shared_context: None,
             udp_timeout: Duration::from_secs(3),
         }
     }
 
     fn attach_socket(&mut self, socket: UdpSocketSendHalf) {
-        self.shared_socket = Some(Arc::new(Mutex::new(socket)));
+        self.server_socket = Some(Arc::new(Mutex::new(socket)));
     }
 
     /// `T` is either UdpSession or UdpSessionClient when running remote or local.
-    pub(crate) async fn run<T>(&mut self) -> IoResult<()>
-    where
-        T: UdpSessionTrait,
+    pub(crate) async fn run<T: UdpSessionTrait>(&mut self) -> IoResult<()>
     {
         // split udp socket and use a separate thread to handle the send half
         let (socket_receiver, socket_sender) = UdpSocket::bind(self.addr).await?.split();
@@ -84,15 +82,9 @@ impl UdpServer {
         // iter channel_receiver stream, generate sessions and run them in spawned futures.
         while let Some((bytes, addr)) = channel_receiver.next().await {
             // convert server to session by reference and take all the server settings
-            let mut session: T = UdpSessionTrait::new(self);
+            let mut session: T = UdpSessionTrait::new(self, bytes, addr);
 
-            session.attach_buf(bytes).attach_source_addr(addr);
-
-            tokio::spawn(session.run().map(|e| {
-                if let Err(e) = e {
-                    println!("{:?}", e.to_string())
-                }
-            }));
+            crate::util::helper::spawn_handler(session.run());
         }
         Ok(())
     }

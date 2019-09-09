@@ -33,7 +33,7 @@ pub fn encrypt_payload(t: CipherType, key: &[u8], payload: &[u8]) -> io::Result<
 }
 
 fn encrypt_payload_stream(t: CipherType, key: &[u8], payload: &[u8]) -> io::Result<Vec<u8>> {
-    let iv = t.gen_init_vec();
+    let iv = t.gen_iv_or_salt();
     let mut cipher = crypto::new_stream(t, key, &iv, CryptoMode::Encrypt);
 
     let mut send_payload = Vec::with_capacity(iv.len() + payload.len());
@@ -44,7 +44,7 @@ fn encrypt_payload_stream(t: CipherType, key: &[u8], payload: &[u8]) -> io::Resu
 }
 
 fn encrypt_payload_aead(t: CipherType, key: &[u8], payload: &[u8]) -> io::Result<Vec<u8>> {
-    let salt = t.gen_salt();
+    let salt =  t.gen_iv_or_salt();
     let tag_size = t.tag_size();
     let mut cipher = crypto::new_aead_encryptor(t, key, &salt);
 
@@ -73,8 +73,7 @@ fn decrypt_payload_stream(t: CipherType, key: &[u8], payload: &[u8]) -> io::Resu
         return Err(err);
     }
 
-    let iv = &payload[..iv_size];
-    let data = &payload[iv_size..];
+    let (iv, data) = payload.split_at(iv_size);
 
     let mut cipher = crypto::new_stream(t, key, iv, CryptoMode::Decrypt);
 
@@ -94,8 +93,8 @@ fn decrypt_payload_aead(t: CipherType, key: &[u8], payload: &[u8]) -> io::Result
         return Err(err);
     }
 
-    let salt = &payload[..salt_size];
-    let data = &payload[salt_size..];
+    let (salt, data) = payload.split_at(salt_size);
+
     let data_length = payload.len() - tag_size - salt_size;
 
     let mut cipher = crypto::new_aead_decryptor(t, key, salt);
