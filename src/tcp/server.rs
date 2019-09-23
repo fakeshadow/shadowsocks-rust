@@ -14,7 +14,7 @@ use crate::{
         context::SharedContext,
         socket5::Address,
     },
-    util::types::{LocalSender, MAXIMUM_UDP_PAYLOAD_SIZE, SharedUdpSockets, SharedUdpSocketSendHalf}
+    util::types::{LocalSender, SharedUdpSockets, SharedUdpSocketSendHalf}
 };
 
 /// TcpServer used on both remote and local.(Acts like an actor)

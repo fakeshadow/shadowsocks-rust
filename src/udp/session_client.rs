@@ -22,6 +22,7 @@ use crate::{
     },
     util::types::{LocalSender,SharedUdpSocketsInner, MAXIMUM_UDP_PAYLOAD_SIZE, SharedUdpSockets, SharedUdpSocketSendHalf}
 };
+use crate::temp::traits::{SelfBuf, Encryption, Decryption, AddSelfBuf, SelfCipherKey};
 
 /// session client is used when running as local server
 pub struct UdpSessionClient {
@@ -75,11 +76,6 @@ impl UdpSessionTrait for UdpSessionClient {
         })
     }
 
-    fn attach_buf(&mut self, buf: Vec<u8>) -> &mut Self {
-        self.buf = buf;
-        self
-    }
-
     fn attach_target_addr(&mut self, _addr: Address) {}
 
     fn get_server_socket_lock(&self) -> MutexLockFuture<UdpSocketSendHalf> {
@@ -90,17 +86,6 @@ impl UdpSessionTrait for UdpSessionClient {
         self.remote_sockets.lock()
     }
 
-    fn get_cipher(&self) -> CipherType {
-        self.cipher
-    }
-
-    fn get_key(&self) -> &[u8] {
-        self.key.as_slice()
-    }
-
-    fn get_buf(&self) -> &[u8] {
-        self.buf.as_slice()
-    }
 
     fn get_source_socket_addr(&self) -> &SocketAddr {
         &self.source_socket_addr
@@ -109,6 +94,29 @@ impl UdpSessionTrait for UdpSessionClient {
     // ToDo: add logic
     fn reconstruct_buf(&mut self) -> IoResult<&mut Self> {
         Ok(self)
+    }
+}
+
+impl SelfBuf for UdpSessionClient {
+    fn buf(&self) -> &[u8] {
+        self.buf.as_slice()
+    }
+}
+
+impl AddSelfBuf for UdpSessionClient {
+    fn add_buf(&mut self, buf: Vec<u8>) -> &mut Self {
+        self.buf = buf;
+        self
+    }
+}
+
+impl SelfCipherKey for UdpSessionClient {
+    fn cipher(&self) -> CipherType {
+        self.cipher
+    }
+
+    fn key(&self) -> &[u8] {
+        self.key.as_slice()
     }
 }
 
@@ -188,8 +196,8 @@ impl UdpSessionClient {
         let mut buf = Vec::new();
         let addr = self.shared_context.get_context().config().get_remote_dns();
         Address::SocketAddress(addr).write_to_buf(&mut buf);
-        buf.extend_from_slice(self.get_buf());
+        buf.extend_from_slice(self.buf());
 
-        self.attach_buf(buf)
+        self.add_buf(buf)
     }
 }

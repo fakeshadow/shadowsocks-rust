@@ -5,8 +5,10 @@ use std::{
     pin::Pin,
     time::Duration,
 };
+use std::io::Cursor;
 
 use byte_string::ByteStr;
+use futures::{StreamExt, TryStreamExt};
 use tokio::io::{
     AsyncRead,
     AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -27,42 +29,16 @@ use crate::{
     },
     util::types::MAXIMUM_UDP_PAYLOAD_SIZE,
 };
-use std::io::Cursor;
+use crate::temp::traits::{AsyncDecryption, SelfBuf, SelfCipherKey, AsyncEncryption};
 
 /// the common session trait used by both remote and local tcp server.
 /// trait need to be Send so it can be passed to different threads as we run sessions in spawned futures so they may jump between threads.
-pub trait TcpSessionTrait: Sized + Send {
+pub trait TcpSessionTrait: Sized + Send + SelfBuf {
     /// sessions inherent most of it's fields from TcpServer.
     fn new(tcp_server: &TcpServer, stream: TcpStream, source_socket_addr: SocketAddr) -> Self;
 
     fn run(mut self) -> Pin<Box<dyn Future<Output=IoResult<()>> + Send>> {
         Box::pin(async move { unimplemented!() })
-    }
-
-    fn get_cipher(&self) -> CipherType;
-    fn get_key(&self) -> &[u8];
-    fn get_buf(&self) -> &[u8];
-
-    fn attach_buf(&mut self, buf: Vec<u8>) -> &mut Self;
-
-    fn decrypt_buf(&mut self) -> IoResult<&mut Self> {
-        let buf = crate::udp::crypto_io::decrypt_payload(
-            self.get_cipher(),
-            self.get_key(),
-            self.get_buf(),
-        )?;
-        self.attach_buf(buf);
-        Ok(self)
-    }
-
-    fn encrypt_buf(&mut self) -> IoResult<&mut Self> {
-        let buf = crate::udp::crypto_io::encrypt_payload(
-            self.get_cipher(),
-            self.get_key(),
-            self.get_buf(),
-        )?;
-        self.attach_buf(buf);
-        Ok(self)
     }
 }
 
@@ -72,7 +48,8 @@ pub struct TcpSession {
     shared_context: SharedContext,
     source_socket_addr: SocketAddr,
     target_addr: Option<Address>,
-    server_stream: TcpStream,
+    server_stream_read: TcpStreamReadHalf,
+    server_stream_write: TcpStreamWriteHalf,
     cipher: CipherType,
     key: Vec<u8>,
     buf: Vec<u8>,
@@ -80,13 +57,16 @@ pub struct TcpSession {
 
 impl TcpSessionTrait for TcpSession {
     fn new(tcp_server: &TcpServer, server_stream: TcpStream, source_socket_addr: SocketAddr) -> Self {
+        let (server_stream_read, server_stream_write) = server_stream.split();
+
         TcpSession {
             shared_context: tcp_server.shared_context.as_ref()
                 .expect("For now server context is use Option<SharedContext>=None as mock data.So unwrap error is expected. TL/DR: This thing doesn't work")
                 .get_self(),
             source_socket_addr,
             target_addr: None,
-            server_stream,
+            server_stream_read,
+            server_stream_write,
             cipher: tcp_server.cipher,
             key: tcp_server.key.to_owned(),
             buf: vec![],
@@ -95,85 +75,54 @@ impl TcpSessionTrait for TcpSession {
 
     fn run(mut self) -> Pin<Box<dyn Future<Output=IoResult<()>> + Send>> {
         Box::pin(async move {
-            self.read_stream()
-                .await?;
-//                .decrypt_buf()?
-//                .extract_target_addr_and_modify_buf(|_| Ok(()))
-//                .await?
-//                .proxy_request()
-//                .await?
-//                .encrypt_buf()?
-//                .send_response()
-//                .await
             Ok(())
         })
     }
+}
 
-    fn get_cipher(&self) -> CipherType {
-        self.cipher
-    }
-
-    fn get_key(&self) -> &[u8] {
-        self.key.as_slice()
-    }
-
-    fn get_buf(&self) -> &[u8] {
+impl SelfBuf for TcpSession {
+    fn buf(&self) -> &[u8] {
         self.buf.as_slice()
     }
+}
 
-    fn attach_buf(&mut self, buf: Vec<u8>) -> &mut Self {
-        self.buf = buf;
-        self
+impl SelfCipherKey for TcpSession {
+    fn cipher(&self) -> CipherType {
+        *&self.cipher
+    }
+
+    fn key(&self) -> &[u8] {
+        self.key.as_slice()
     }
 }
 
 impl TcpSession {
-    async fn read_stream(&mut self) -> IoResult<&mut Self> {
-        let mut buf = Vec::new();
+    async fn decrypt_stream(&mut self) -> IoResult<()> {
+        let mut async_decrypt =
+            AsyncDecryption::new(
+                &mut self.server_stream_read,
+                self.cipher,
+                self.key.as_slice(),
+            );
 
-        self.server_stream.write_all(&mut buf).await?;
+        // ToDo: handle error
+        while let Some(bytes) = async_decrypt.try_next().await.unwrap() {}
 
-        self.attach_buf(buf);
-
-        Ok(self)
+        Ok(())
     }
-//
-//    fn extract_target_addr_and_modify_buf<'a, F>(
-//        &'a mut self,
-//        mut modify_buf: F,
-//    ) -> Pin<Box<dyn Future<Output=IoResult<&'a mut Self>> + Send + 'a>>
-//        where
-//            F: FnMut(&mut Vec<u8>) -> IoResult<()> + Send + 'a,
-//    {
-//        Box::pin(async move {
-//            // extract target address from self.buf
-//            let mut cur = Cursor::new(self.get_buf());
-//            let addr = Address::read_from(&mut cur).await?;
-//
-//            let mut buf = Vec::new();
-//
-//            // we can use this closure to modify buf.
-//            modify_buf(&mut buf)?;
-//
-//            // we push all the remaining bytes to buf
-//            cur.read_to_end(&mut buf).await?;
-//
-//            // attach_buf return &mut self so it's safe to chain them together.
-//            self.attach_buf(buf).attach_target_addr(addr);
-//
-//            Ok(self)
-//        })
-//    }
-//
-//    fn send_response<'a>(&'a mut self) -> Pin<Box<dyn Future<Output=IoResult<()>> + Send + 'a>> {
-//        Box::pin(async move {
-//            let mut sender = self.get_server_socket_lock().await;
-//
-//            let _ = sender
-//                .send_to(self.get_buf(), self.get_source_socket_addr())
-//                .await?;
-//            Ok(())
-//        })
-//    }
+
+    async fn encrypt_stream(&mut self) -> IoResult<()> {
+        let mut async_encrypt =
+            AsyncEncryption::new(
+                &mut self.server_stream_read,
+                self.cipher,
+                self.key.as_slice(),
+            );
+
+        // ToDo: handle error
+        while let Some(bytes) = async_encrypt.try_next().await.unwrap() {}
+
+        Ok(())
+    }
 }
 
